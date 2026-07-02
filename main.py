@@ -22,9 +22,9 @@ from dotenv import load_dotenv
 # ── Load environment variables ───────────────────────────────
 load_dotenv()
 
-SUPABASE_URL: str = os.environ["SUPABASE_URL"]          # e.g. https://xxxx.supabase.co
-SUPABASE_SERVICE_KEY: str = os.environ["SUPABASE_SERVICE_KEY"]  # service_role secret key
-API_SECRET: str = os.environ["API_SECRET"]               # shared secret between USB app & API
+SUPABASE_URL: str = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_KEY: str = os.environ["SUPABASE_SERVICE_KEY"]
+API_SECRET: str = os.environ["API_SECRET"]
 
 # ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(
@@ -38,18 +38,18 @@ app = FastAPI(
     title="Music Flash API",
     description="Cloud-Sync backend for USB Music Drive",
     version="1.0.0",
-    docs_url="/docs",   # Swagger UI — disable in production if desired
+    docs_url="/docs",
     redoc_url=None,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Lock this down to your frontend domain in production
+    allow_origins=["*"],
     allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 
-# ── Supabase HTTP client (reused across requests) ────────────
+# ── Supabase HTTP client ──────────────────────────────────────
 supabase_headers = {
     "apikey": SUPABASE_SERVICE_KEY,
     "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
@@ -58,7 +58,6 @@ supabase_headers = {
 }
 
 def supa_client() -> httpx.AsyncClient:
-    """Returns a pre-configured async HTTP client for Supabase REST API."""
     return httpx.AsyncClient(
         base_url=f"{SUPABASE_URL}/rest/v1",
         headers=supabase_headers,
@@ -67,7 +66,6 @@ def supa_client() -> httpx.AsyncClient:
 
 # ── Security dependency ───────────────────────────────────────
 async def verify_api_secret(x_api_secret: Optional[str] = Header(default=None)):
-    """Validate the shared secret sent by the USB client app."""
     if x_api_secret != API_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid API secret.")
     return True
@@ -102,7 +100,6 @@ class SyncCompleteRequest(BaseModel):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint — used by Render to confirm app is alive."""
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
@@ -112,15 +109,10 @@ async def authenticate_drive(
     request: Request,
     _: bool = Depends(verify_api_secret),
 ):
-    """
-    Step 1 of sync: USB drive authenticates itself.
-    Returns drive metadata + user plan if the serial is valid & active.
-    """
     client_ip = request.client.host if request.client else "unknown"
     logger.info(f"Auth attempt | serial={body.drive_serial} | ip={client_ip}")
 
     async with supa_client() as client:
-        # Fetch the drive record
         resp = await client.get(
             "/usb_drives",
             params={
@@ -141,7 +133,6 @@ async def authenticate_drive(
 
     drive = drives[0]
 
-    # Update last_seen fields (fire-and-forget)
     async with supa_client() as client:
         await client.patch(
             f"/usb_drives?id=eq.{drive['id']}",
@@ -164,14 +155,9 @@ async def get_pending_tracks(
     drive_serial: str,
     _: bool = Depends(verify_api_secret),
 ):
-    """
-    Step 2 of sync: Returns list of tracks not yet downloaded to this drive.
-    Generates short-lived signed download URLs from Supabase Storage.
-    """
     logger.info(f"Sync request | serial={drive_serial}")
 
     async with supa_client() as client:
-        # Get drive ID from serial
         drive_resp = await client.get(
             "/usb_drives",
             params={
@@ -186,7 +172,6 @@ async def get_pending_tracks(
 
     drive_id = drive_resp.json()[0]["id"]
 
-    # Fetch all undownloaded track access records
     async with supa_client() as client:
         access_resp = await client.get(
             "/drive_track_access",
@@ -206,7 +191,6 @@ async def get_pending_tracks(
         logger.info(f"No pending tracks for drive {drive_id}")
         return {"pending_tracks": [], "count": 0}
 
-    # Generate signed URLs for each track (valid for 1 hour = 3600 seconds)
     pending_tracks: list[TrackRecord] = []
     for record in access_records:
         track = record["tracks"]
@@ -234,15 +218,10 @@ async def mark_sync_complete(
     request: Request,
     _: bool = Depends(verify_api_secret),
 ):
-    """
-    Step 3 of sync: USB app reports which tracks were successfully downloaded.
-    Marks them as downloaded and logs the sync session.
-    """
     client_ip = request.client.host if request.client else "unknown"
     now = datetime.now(timezone.utc).isoformat()
 
     async with supa_client() as client:
-        # Get drive ID
         drive_resp = await client.get(
             "/usb_drives",
             params={"drive_serial": f"eq.{body.drive_serial}", "select": "id"},
@@ -253,7 +232,6 @@ async def mark_sync_complete(
 
     drive_id = drive_resp.json()[0]["id"]
 
-    # Mark tracks as downloaded
     if body.downloaded_track_ids:
         track_id_filter = "{" + ",".join(body.downloaded_track_ids) + "}"
         async with supa_client() as client:
@@ -262,7 +240,6 @@ async def mark_sync_complete(
                 json={"downloaded_at": now},
             )
 
-    # Write sync log
     async with supa_client() as client:
         await client.post(
             "/sync_logs",
@@ -285,19 +262,18 @@ async def mark_sync_complete(
 
 @app.get("/api/v1/admin/stats")
 async def admin_stats(_: bool = Depends(verify_api_secret)):
-    """Quick stats snapshot for admin dashboards."""
     async with supa_client() as client:
-        users_resp   = await client.get("/users",     params={"select": "count"})
-        drives_resp  = await client.get("/usb_drives", params={"select": "count"})
-        tracks_resp  = await client.get("/tracks",    params={"select": "count", "is_published": "eq.true"})
+        users_resp   = await client.get("/users",              params={"select": "count"})
+        drives_resp  = await client.get("/usb_drives",         params={"select": "count"})
+        tracks_resp  = await client.get("/tracks",             params={"select": "count", "is_published": "eq.true"})
         pending_resp = await client.get("/drive_track_access", params={"select": "count", "downloaded_at": "is.null"})
 
     return {
-        "total_users":          users_resp.headers.get("content-range", "?"),
-        "total_drives":         drives_resp.headers.get("content-range", "?"),
-        "published_tracks":     tracks_resp.headers.get("content-range", "?"),
-        "pending_downloads":    pending_resp.headers.get("content-range", "?"),
-        "timestamp":            datetime.now(timezone.utc).isoformat(),
+        "total_users":       users_resp.headers.get("content-range", "?"),
+        "total_drives":      drives_resp.headers.get("content-range", "?"),
+        "published_tracks":  tracks_resp.headers.get("content-range", "?"),
+        "pending_downloads": pending_resp.headers.get("content-range", "?"),
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -314,10 +290,10 @@ async def _generate_signed_url(file_path: str, expires_in: int = 3600) -> Option
         )
 
     if resp.status_code == 200:
-    signed = resp.json().get("signedURL", "")
-    if signed.startswith("/"):
-        signed = f"{SUPABASE_URL}/storage/v1{signed}"
-    return signed if signed else None
+        signed = resp.json().get("signedURL", "")
+        if signed.startswith("/"):
+            signed = f"{SUPABASE_URL}/storage/v1{signed}"
+        return signed if signed else None
 
     logger.error(f"Signed URL error for {file_path}: {resp.text}")
     return None
