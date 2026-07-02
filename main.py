@@ -314,7 +314,10 @@ async def _generate_signed_url(file_path: str, expires_in: int = 3600) -> Option
         )
 
     if resp.status_code == 200:
-        return resp.json().get("signedURL")
+    signed = resp.json().get("signedURL", "")
+    if signed.startswith("/"):
+        signed = f"{SUPABASE_URL}/storage/v1{signed}"
+    return signed if signed else None
 
     logger.error(f"Signed URL error for {file_path}: {resp.text}")
     return None
